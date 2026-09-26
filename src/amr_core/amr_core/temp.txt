@@ -1,0 +1,7 @@
+        R1_PICKUP, R1_DROP = (-11.5, 13.0), (-9.0, -16.0)
+        R2_PICKUP, R2_DROP = (-11.5, 13.0), (-9.0, -16.0)
+        
+        # We simplify to direct point-to-point for the prototype demonstration
+        path_r1 = self.get_dstarlite_path(dstar_r1, self.r1_pose['x'], self.r1_pose['y'], R1_PICKUP, R1_DROP)
+        path_r2 = self.get_dstarlite_path(dstar_r2, self.r2_pose['x'], self.r2_pose['y'], R2_PICKUP, R2_DROP)
+        

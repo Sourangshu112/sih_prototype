@@ -1,0 +1,4 @@
+string task_id
+Pose2D pickup_coordinates
+Pose2D drop_coordinates
+bool is_priority
