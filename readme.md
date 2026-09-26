@@ -68,3 +68,9 @@ ros2 run amr_core sih_director
 3. Click the RUN PROTOTYPE DEMO override button on the UI.
 4. The dashboard will instantly visualize the D* Lite global paths in 10seconds.
 5. When the AMRs breach the 2.5-meter proximity threshold, the local costmap repair will trigger, routing Robot safely around Robot 1 without collisions.
+
+---
+### After every run clean the db with the following command
+```bash
+python3 clean_db.py
+```
