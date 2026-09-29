@@ -86,6 +86,7 @@ class DashboardNode(Node):
 
         #Zenoh publisher
         self.task_publisher = self.z_session.declare_publisher('fleet_tasks')
+        self.complete_sub = self.z_session.declare_subscriber('fleet/task_complete', self.task_complete_cb)
         
         print("[Dashboard] WebSocket Server Active. Listening for mesh data...", flush=True)
 
@@ -134,17 +135,44 @@ class DashboardNode(Node):
         except json.JSONDecodeError as e:
             print(f"[Dashboard] Failed to parse bid matrix: {e}", flush=True)
 
+    def task_complete_cb(self, sample: zenoh.Sample):
+        """Catches the completion signal, updates the DB, and refreshes the UI ledger."""
+        try:
+            payload = sample.payload.decode('utf-8').split()
+            if len(payload) >= 2:
+                r_id, task_id = payload[0], payload[1]
+                print(f"[Dashboard] Task {task_id} completed by {r_id}", flush=True)
+                
+                # Emit direct completion event
+                socketio.emit('task_completed', {"task_id": task_id, "robot_id": r_id})
+                
+                # Update SQLite to persist the completion status
+                conn = sqlite3.connect(DB_FILE)
+                cursor = conn.cursor()
+                cursor.execute("SELECT Task FROM tasks_ledger WHERE Task_id = ?", (task_id,))
+                row = cursor.fetchone()
+                if row:
+                    task_json = json.loads(row[0])
+                    task_json['Amr_completed'] = r_id
+                    cursor.execute("UPDATE tasks_ledger SET Task = ? WHERE Task_id = ?", (json.dumps(task_json), task_id))
+                    conn.commit()
+                conn.close()
+                
+                # Refresh the frontend ledger
+                socketio.emit('initial_state_response', {"tasks": get_all_tasks_from_db()})
+        except Exception as e:
+            print(f"[Dashboard] Completion update error: {e}", flush=True)
+
 # Socket.IO Listener for frontend task dispatch
 @socketio.on('issue_task')
 def handle_issue_task(payload):
     if ros_node_instance is None:
-        # print("[Backend] Warning: ROS node not ready to publish tasks.", flush=True)
         return
 
     try:
         task_id = payload.get('task_id', f"TASK_{int(datetime.now().timestamp())}")
         
-        # 1. Update Database FIRST
+        # 1. Update SQLite Database FIRST (Reference from original issue_task)
         task_data = {
             "Task_id": task_id,
             "Task": payload,
@@ -153,23 +181,43 @@ def handle_issue_task(payload):
         db_upsert_task(task_data)
         print(f"[Dashboard] Task {task_id} saved to SQLite.", flush=True)
 
-        # 2. Start Broadcast
-        msg = DispatchTask()
-        msg.task_id = task_id
-        msg.is_priority = payload.get('priority', False)
-        msg.pickup_coordinates = Pose2D(
-            x=float(payload['pickup'][0]),
-            y=float(payload['pickup'][1]),
-            theta=0.0
-        )
-        msg.drop_coordinates = Pose2D(
-            x=float(payload['drop'][0]),
-            y=float(payload['drop'][1]),
-            theta=0.0
-        )
-        task_payload = serialize_message(msg)
-        ros_node_instance.task_publisher.put(task_payload)
-        print(f"[Dashboard] Issued task {msg.task_id} via Socket.IO", flush=True)
+        # 2. Extract the specific route identifier sent from the React UI
+        task_route = payload.get('route', '')
+        robot_id = None
+
+        # Map specific routes to the hardcoded AMRs
+        if task_route == "A->G":
+            robot_id = "robot_1"
+        elif task_route == "D->H":
+            robot_id = "robot_2"
+        elif task_route == "B->F":
+            robot_id = "robot_3"
+
+        # 3. Trigger the Specific Robot via Zenoh
+        if robot_id:
+            # socketio.sleep(3.0)
+            trigger_payload = f"START {robot_id} {task_id}"
+            ros_node_instance.z_session.put("fleet/task_assign", trigger_payload)
+            print(f"[Dashboard] Hardcoded trigger over Zenoh: {trigger_payload} for route {task_route}", flush=True)
+            
+        else:
+            # Fallback: If no hardcoded route matches, run the original dynamic CBBA broadcast
+            msg = DispatchTask()
+            msg.task_id = task_id
+            msg.is_priority = payload.get('priority', False)
+            msg.pickup_coordinates = Pose2D(
+                x=float(payload['pickup'][0]),
+                y=float(payload['pickup'][1]),
+                theta=0.0
+            )
+            msg.drop_coordinates = Pose2D(
+                x=float(payload['drop'][0]),
+                y=float(payload['drop'][1]),
+                theta=0.0
+            )
+            task_payload = serialize_message(msg)
+            ros_node_instance.task_publisher.put(task_payload)
+            print(f"[Dashboard] Route '{task_route}' unknown. Issued generic task {msg.task_id} via CBBA", flush=True)
         
     except KeyError as e:
         print(f"[Backend] Malformed task payload missing key: {e}", flush=True)
@@ -183,41 +231,44 @@ def handle_initial_state():
     tasks = get_all_tasks_from_db()
     
     # Emit all past/current tasks directly to the client that just connected
+    # socketio.emit('initial_state_response', {"tasks": tasks})
     socketio.emit('initial_state_response', {"tasks": tasks})
 
 
 @socketio.on('trigger_sih_prototype')
 def handle_sih_prototype():
-    print("[Dashboard] SIH PROTOTYPE DEMO TRIGGERED", flush=True)
+    print("[Dashboard] SIH PROTOTYPE DEMO TRIGGERED (3 AMRs)", flush=True)
     
-    # 1. Hardcode two opposing tasks
     t_issue = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     task_1 = {
         "Task_id": "DEMO_R1", 
-        "Task": {"pickup": [-11.5, 13.0], "drop": [1-9.0, -16.0], "pickup_name": "Pickup A", "drop_name": "Drop D", "priority": True}, 
+        "Task": {"pickup": [-11.5, 13.0], "drop": [-9.0, -16.0], "priority": True}, 
         "Task_issue_time": t_issue
     }
     task_2 = {
         "Task_id": "DEMO_R2", 
-        "Task": {"pickup": [-11.5, 13.0], "drop": [-2.0, -21.0], "pickup_name": "Pickup A", "drop_name": "Drop E", "priority": False}, 
+        "Task": {"pickup": [-11.5, 13.0], "drop": [-2.0, -21.0], "priority": False}, 
+        "Task_issue_time": t_issue
+    }
+    task_3 = {
+        "Task_id": "DEMO_R3", 
+        "Task": {"pickup": [1.5, 3.0], "drop": [-9.0, -11.0], "priority": False}, 
         "Task_issue_time": t_issue
     }
     
-    # 2. Force inject into the database (bypassing CBBA)
+    # Save all 3 tasks to the SQLite ledger
     db_upsert_task(task_1)
     db_upsert_task(task_2)
+    db_upsert_task(task_3)
     
-    # 3. Force update the React UI
     tasks = get_all_tasks_from_db()
-    
-    # Manually flag them as assigned for the UI visualization
     for t in tasks:
         if t['Task_id'] == "DEMO_R1": t['Amr_completed'] = "robot_1"
         if t['Task_id'] == "DEMO_R2": t['Amr_completed'] = "robot_2"
+        if t['Task_id'] == "DEMO_R3": t['Amr_completed'] = "robot_3"
         
     socketio.emit('initial_state_response', {"tasks": tasks})
     
-    # 4. Fire the Zenoh override signal to wake up the hijack script
     if ros_node_instance is not None:
         ros_node_instance.z_session.put("fleet/sih_override", "START")
 

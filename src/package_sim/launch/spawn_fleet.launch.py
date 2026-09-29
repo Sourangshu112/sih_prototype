@@ -48,13 +48,11 @@ def generate_launch_description():
             # Target the exact topics your gz topic -l command revealed
             f"/model/{robot['name']}/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist",
             f"/model/{robot['name']}/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry",
-            f"/world/{world_name}/model/{robot['name']}/link/chassis/sensor/lidar/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan",
         ],
         remappings=[
             # Translate the Gazebo topics into the ROS topics peer_node expects
             (f"/model/{robot['name']}/cmd_vel", f"/{robot['name']}/cmd_vel"),
             (f"/model/{robot['name']}/odometry", f"/{robot['name']}/odom"),
-            (f"/world/{world_name}/model/{robot['name']}/link/chassis/sensor/lidar/scan", f"/{robot['name']}/scan"),
         ],
         output='screen'
     )
